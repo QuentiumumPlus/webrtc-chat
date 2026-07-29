@@ -2,7 +2,22 @@
 const SUPABASE_URL = 'https://wlohcooukadbiaysxufp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_Og0wFXrpDQVev7Y56YaEmw_jn_xfoNu';
 
+console.log('Supabase URL:', SUPABASE_URL);
+console.log('Supabase Key:', SUPABASE_KEY);
+
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Test connection
+setTimeout(async () => {
+  console.log('Testing Supabase connection...');
+  const { data, error } = await sb.from('users').select('*').limit(1);
+  console.log('Test result:', { data, error });
+  if (error) {
+    console.error('CONNECTION FAILED:', error.message);
+  } else {
+    console.log('CONNECTION OK, users found:', data.length);
+  }
+}, 1000);
 
 // ============ SOUND ============
 const SFX = {
@@ -38,7 +53,7 @@ const $ = s => document.getElementById(s);
 const show = el => el && el.classList.remove('hidden');
 const hide = el => el && el.classList.add('hidden');
 const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
-const avatar = name => {
+const makeAvatar = name => {
   const colors = ['#e17055','#00b894','#6c5ce7','#fdcb6e','#e84393','#00cec9','#d63031','#0984e3'];
   return { initial: name[0].toUpperCase(), color: colors[name.charCodeAt(0) % colors.length] };
 };
@@ -53,51 +68,69 @@ $('loginForm').onsubmit = async e => {
   $('loginBtn').disabled = true;
   $('loginBtn').innerHTML = '<span>Katiliyor...</span>';
 
-  // Eski ayni isimde kullaniciyi sil
-  await sb.from('users').delete().eq('username', name);
+  try {
+    // Eski ayni isimde kullaniciyi sil
+    const delRes = await sb.from('users').delete().eq('username', name);
+    console.log('Delete old user:', delRes);
 
-  const av = avatar(name);
-  const { data, error } = await sb.from('users').insert({
-    id: crypto.randomUUID(),
-    username: name,
-    avatar: av,
-    last_seen: Date.now()
-  }).select().single();
+    const av = makeAvatar(name);
+    const userId = crypto.randomUUID();
+    console.log('Creating user:', userId, name);
 
-  if (error) { alert('Hata: ' + error.message); location.reload(); return; }
+    const { data, error } = await sb.from('users').insert({
+      id: userId,
+      username: name,
+      avatar: av,
+      last_seen: Date.now()
+    }).select().single();
 
-  me = data;
-  hide($('loginView'));
-  show($('mainView'));
-  $('myAvatar').style.background = av.color;
-  $('myAvatar').textContent = av.initial;
-  $('myName').textContent = name;
+    console.log('Insert result:', { data, error });
 
-  startApp();
+    if (error) {
+      alert('Giris hatasi: ' + error.message);
+      $('loginBtn').disabled = false;
+      $('loginBtn').innerHTML = '<span>Sohbete Katil</span>';
+      return;
+    }
+
+    me = data;
+    console.log('Logged in as:', me);
+
+    hide($('loginView'));
+    show($('mainView'));
+    $('myAvatar').style.background = av.color;
+    $('myAvatar').textContent = av.initial;
+    $('myName').textContent = name;
+
+    startApp();
+  } catch (e) {
+    console.error('Login error:', e);
+    alert('Hata: ' + e.message);
+    $('loginBtn').disabled = false;
+    $('loginBtn').innerHTML = '<span>Sohbete Katil</span>';
+  }
 };
 
 // ============ APP ============
 function startApp() {
-  // Polling baslat
   refreshUsers();
   pollInterval = setInterval(refreshUsers, 2000);
-
-  // Heartbeat - kendini guncelle
   heartbeat();
   setInterval(heartbeat, 5000);
-
-  // Realtime mesajlar
   listenMessages();
 }
 
 async function heartbeat() {
   if (!me) return;
-  await sb.from('users').update({ last_seen: Date.now() }).eq('id', me.id);
+  const { error } = await sb.from('users').update({ last_seen: Date.now() }).eq('id', me.id);
+  if (error) console.error('Heartbeat error:', error);
 }
 
 async function refreshUsers() {
-  const { data } = await sb.from('users').select('*').gt('last_seen', Date.now() - 8000);
-  if (!data) return;
+  if (!me) return;
+  const cutoff = Date.now() - 8000;
+  const { data, error } = await sb.from('users').select('*').gt('last_seen', cutoff);
+  if (error) { console.error('Refresh users error:', error); return; }
 
   const others = data.filter(u => u.id !== me.id);
   $('onlineCount').textContent = others.length;
@@ -122,17 +155,16 @@ async function refreshUsers() {
   `).join('');
 
   list.querySelectorAll('.user-item').forEach(el => {
-    el.onclick = () => openChat(el.dataset.id, data.find(u => u.id === el.dataset.id));
+    el.onclick = () => openChat(el.dataset.id, others.find(u => u.id === el.dataset.id));
   });
 
-  // Mevcut chat hala aktif mi?
   if (currentChat) {
     const still = others.find(u => u.id === currentChat.id);
     if (still) {
       $('chatStatus').textContent = 'Cevrimici';
       $('chatStatus').style.color = 'var(--green)';
     } else {
-      $('chatStatus').textContent = 'Cevrimdisi';
+      $('chatStatus').textContent = 'Son gorulme: az once';
       $('chatStatus').style.color = 'var(--txt3)';
     }
   }
@@ -147,7 +179,6 @@ async function openChat(userId, userData) {
   if (!userData) return;
 
   currentChat = userData;
-
   hide($('emptyState'));
   show($('chatHeader'));
   show($('messagesArea'));
@@ -157,21 +188,20 @@ async function openChat(userId, userData) {
   $('chatAvatar').textContent = userData.avatar?.initial || '?';
   $('chatName').textContent = userData.username;
 
-  // Sohbet gecmisini yukle
   await loadMessages();
-
-  // Listeyi guncelle
   refreshUsers();
 }
 
 async function loadMessages() {
   if (!me || !currentChat) return;
 
-  const { data } = await sb.from('messages')
+  const { data, error } = await sb.from('messages')
     .select('*')
     .or(`and(sender_id.eq.${me.id},receiver_id.eq.${currentChat.id}),and(sender_id.eq.${currentChat.id},receiver_id.eq.${me.id})`)
     .order('created_at', { ascending: true })
     .limit(100);
+
+  if (error) { console.error('Load messages error:', error); return; }
 
   const el = $('messages');
   el.innerHTML = '';
@@ -183,8 +213,7 @@ function appendMessage(m) {
   const isSent = m.sender_id === me.id;
   const div = document.createElement('div');
   div.className = 'msg' + (isSent ? ' sent' : '');
-
-  const av = m.sender_avatar || avatar(m.sender_name || 'U');
+  const av = m.sender_avatar || makeAvatar(m.sender_name || 'U');
 
   if (m.type === 'file') {
     div.innerHTML = `
@@ -213,7 +242,7 @@ function appendMessage(m) {
   $('messages').appendChild(div);
 }
 
-// ============ SEND MESSAGE ============
+// ============ SEND ============
 $('sendBtn').onclick = sendMsg;
 $('msgInput').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
@@ -229,7 +258,7 @@ async function sendMsg() {
   $('msgInput').value = '';
   $('sendBtn').disabled = true;
 
-  const { error } = await sb.from('messages').insert({
+  const msgData = {
     id: crypto.randomUUID(),
     sender_id: me.id,
     sender_name: me.username,
@@ -239,40 +268,56 @@ async function sendMsg() {
     content: txt,
     data: {},
     created_at: Date.now()
-  });
+  };
 
-  if (error) console.error('Send error:', error);
+  console.log('Sending message:', msgData);
+  const { data, error } = await sb.from('messages').insert(msgData);
+  console.log('Send result:', { data, error });
+
+  if (error) {
+    console.error('Send error:', error);
+  } else {
+    appendMessage(msgData);
+    $('messagesArea').scrollTop = $('messagesArea').scrollHeight;
+  }
 }
 
 // ============ REALTIME ============
 function listenMessages() {
   if (!me) return;
 
-  sb.channel('msgs')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${me.id}` }, payload => {
-      const m = payload.new;
-      if (m.sender_id === me.id) return;
+  console.log('Setting up realtime for user:', me.id);
 
-      SFX.msg();
-
-      if (currentChat && m.sender_id === currentChat.id) {
-        appendMessage(m);
-        $('messagesArea').scrollTop = $('messagesArea').scrollHeight;
+  sb.channel('messages-realtime')
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages' },
+      payload => {
+        const m = payload.new;
+        console.log('Realtime message:', m);
+        if (m.sender_id === me.id) return;
+        if (m.type === 'offer' || m.type === 'answer' || m.type === 'ice' || m.type === 'call-end' || m.type === 'call-reject') {
+          handleSignal(m);
+          return;
+        }
+        SFX.msg();
+        if (currentChat && m.sender_id === currentChat.id) {
+          appendMessage(m);
+          $('messagesArea').scrollTop = $('messagesArea').scrollHeight;
+        }
       }
-    })
-    .subscribe();
+    )
+    .subscribe((status) => {
+      console.log('Realtime status:', status);
+    });
+}
 
-  // Call signaling
-  sb.channel('calls')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${me.id}` }, payload => {
-      const m = payload.new;
-      if (m.type === 'offer') handleIncomingCall(m);
-      else if (m.type === 'answer') handleCallAnswer(m);
-      else if (m.type === 'ice') handleICE(m);
-      else if (m.type === 'call-end') handleCallEnd(m);
-      else if (m.type === 'call-reject') handleCallReject(m);
-    })
-    .subscribe();
+function handleSignal(m) {
+  switch (m.type) {
+    case 'offer': handleIncomingCall(m); break;
+    case 'answer': handleCallAnswer(m); break;
+    case 'ice': handleICE(m); break;
+    case 'call-end': case 'call-reject': cleanupCall(); break;
+  }
 }
 
 // ============ FILE ============
@@ -283,7 +328,6 @@ $('fileInput').onchange = e => {
 
 async function uploadFile(file) {
   if (!me || !currentChat) return;
-
   const reader = new FileReader();
   reader.onload = async () => {
     await sb.from('messages').insert({
@@ -304,7 +348,6 @@ async function uploadFile(file) {
 // ============ WEBRTC ============
 let localStream = null;
 let peerConn = null;
-let dataChannel = null;
 
 const rtcConfig = {
   iceServers: [
@@ -327,17 +370,12 @@ async function getMedia(audio, video) {
   }
 }
 
-function createPeer(targetId) {
+function createPeer() {
   peerConn = new RTCPeerConnection(rtcConfig);
-
-  if (localStream) {
-    localStream.getTracks().forEach(t => peerConn.addTrack(t, localStream));
-  }
+  if (localStream) localStream.getTracks().forEach(t => peerConn.addTrack(t, localStream));
 
   peerConn.onicecandidate = e => {
-    if (e.candidate && currentChat) {
-      sendSignal('ice', { candidate: e.candidate });
-    }
+    if (e.candidate) sendSignal('ice', { candidate: e.candidate });
   };
 
   peerConn.ontrack = e => {
@@ -349,41 +387,20 @@ function createPeer(targetId) {
       SFX.connected();
       $('callStatusText').textContent = 'Baglandi!';
     }
-    if (peerConn.connectionState === 'failed' || peerConn.connectionState === 'disconnected') {
-      endCall();
-    }
-  };
-
-  // Data channel
-  dataChannel = peerConn.createDataChannel('chat', { ordered: true });
-  dataChannel.onmessage = e => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.type === 'msg') {
-        SFX.msg();
-        appendMessage({
-          sender_id: callPeer,
-          sender_name: currentChat?.username || 'Peer',
-          sender_avatar: currentChat?.avatar,
-          type: 'msg',
-          content: d.content,
-          created_at: Date.now()
-        });
-      }
-    } catch (err) {}
+    if (peerConn.connectionState === 'failed' || peerConn.connectionState === 'disconnected') endCall();
   };
 
   return peerConn;
 }
 
 async function sendSignal(type, data) {
-  if (!me || !currentChat) return;
+  if (!me || !callPeer) return;
   await sb.from('messages').insert({
     id: crypto.randomUUID(),
     sender_id: me.id,
     sender_name: me.username,
     sender_avatar: me.avatar,
-    receiver_id: currentChat.id,
+    receiver_id: callPeer,
     type,
     content: '',
     data,
@@ -395,8 +412,8 @@ async function sendSignal(type, data) {
 $('btnVoice').onclick = () => startCall('voice');
 $('btnVideo').onclick = () => startCall('video');
 $('callEnd').onclick = endCall;
-$('callMute').onclick = toggleMute;
-$('callCam').onclick = toggleCam;
+$('callMute').onclick = () => { if (localStream) { const t = localStream.getAudioTracks()[0]; if (t) t.enabled = !t.enabled; } };
+$('callCam').onclick = () => { if (localStream) { const t = localStream.getVideoTracks()[0]; if (t) t.enabled = !t.enabled; } };
 $('incAccept').onclick = acceptCall;
 $('incReject').onclick = rejectCall;
 
@@ -405,10 +422,9 @@ async function startCall(type) {
   try {
     callPeer = currentChat.id;
     await getMedia(type === 'voice' || type === 'video', type === 'video');
-    const pc = createPeer(callPeer);
+    const pc = createPeer();
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
     await sendSignal('offer', { offer, callType: type });
 
     show($('callOverlay'));
@@ -417,56 +433,42 @@ async function startCall(type) {
     $('callAvatar').textContent = currentChat.avatar?.initial || '?';
     $('callStatusText').textContent = 'Araniyor...';
 
-    // 30sn timeout
-    setTimeout(() => {
-      if ($('callStatusText').textContent === 'Araniyor...') endCall();
-    }, 30000);
+    setTimeout(() => { if ($('callStatusText')?.textContent === 'Araniyor...') endCall(); }, 30000);
   } catch (e) { console.error(e); }
 }
 
 async function handleIncomingCall(m) {
   if (m.sender_id === me.id) return;
-
   callPeer = m.sender_id;
-  const callerAv = m.sender_avatar || avatar(m.sender_name || '?');
+  window._incOffer = m.data?.offer;
+  window._incType = m.data?.callType;
 
   SFX.ring();
   ringInterval = setInterval(() => SFX.ring(), 1500);
 
-  $('incAvatar').style.background = callerAv.color || '#666';
-  $('incAvatar').textContent = callerAv.initial || '?';
+  const av = m.sender_avatar || makeAvatar(m.sender_name || '?');
+  $('incAvatar').style.background = av.color || '#666';
+  $('incAvatar').textContent = av.initial || '?';
   $('incName').textContent = m.sender_name || 'Bilinmeyen';
   $('incType').textContent = m.data?.callType === 'video' ? 'Goruntulu Arama' : 'Sesli Arama';
   show($('incomingOverlay'));
 
-  // Caller bilgisini kaydet
-  window._incomingOffer = m.data?.offer;
-  window._incomingCallType = m.data?.callType;
-
-  // 25sn cevap
-  setTimeout(() => {
-    if ($('incomingOverlay').classList.contains('hidden')) return;
-    rejectCall();
-  }, 25000);
+  setTimeout(() => { if (!$('incomingOverlay').classList.contains('hidden')) rejectCall(); }, 25000);
 }
 
 async function acceptCall() {
   hide($('incomingOverlay'));
   stopRing();
-
   try {
-    const type = window._incomingCallType || 'voice';
+    const type = window._incType || 'voice';
     await getMedia(type === 'voice' || type === 'video', type === 'video');
-    const pc = createPeer(callPeer);
-    await pc.setRemoteDescription(new RTCSessionDescription(window._incomingOffer));
+    const pc = createPeer();
+    await pc.setRemoteDescription(new RTCSessionDescription(window._incOffer));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
     await sendSignal('answer', { answer });
 
-    // Karsidakinin bilgilerini bul
     const { data: caller } = await sb.from('users').select('*').eq('id', callPeer).single();
-
     show($('callOverlay'));
     $('callName').textContent = caller?.username || 'Peer';
     $('callAvatar').style.background = caller?.avatar?.color || '#666';
@@ -479,32 +481,27 @@ async function acceptCall() {
 async function rejectCall() {
   hide($('incomingOverlay'));
   stopRing();
-  if (callPeer) {
-    await sendSignal('call-reject', {});
-  }
+  if (callPeer) await sendSignal('call-reject', {}).catch(() => {});
   callPeer = null;
-  window._incomingOffer = null;
+  window._incOffer = null;
 }
 
-function handleCallAnswer(m) {
+async function handleCallAnswer(m) {
   if (peerConn && m.data?.answer) {
-    peerConn.setRemoteDescription(new RTCSessionDescription(m.data.answer));
+    await peerConn.setRemoteDescription(new RTCSessionDescription(m.data.answer));
     SFX.connected();
     $('callStatusText').textContent = 'Baglandi!';
   }
 }
 
-function handleICE(m) {
+async function handleICE(m) {
   if (peerConn && m.data?.candidate) {
-    peerConn.addIceCandidate(new RTCIceCandidate(m.data.candidate)).catch(() => {});
+    await peerConn.addIceCandidate(new RTCIceCandidate(m.data.candidate)).catch(() => {});
   }
 }
 
-async function handleCallEnd(m) {
-  cleanupCall();
-}
-
-async function handleCallReject(m) {
+async function endCall() {
+  if (callPeer && me) await sendSignal('call-end', {}).catch(() => {});
   cleanupCall();
 }
 
@@ -514,54 +511,27 @@ function cleanupCall() {
   hide($('callOverlay'));
   hide($('incomingOverlay'));
   if (peerConn) { try { peerConn.close(); } catch(e) {} peerConn = null; }
-  dataChannel = null;
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   $('remoteVideo').srcObject = null;
   $('localVideo').srcObject = null;
   callPeer = null;
-  window._incomingOffer = null;
+  window._incOffer = null;
 }
 
-async function endCall() {
-  if (callPeer && me) {
-    await sendSignal('call-end', {}).catch(() => {});
-  }
-  cleanupCall();
-}
-
-function toggleMute() {
-  if (localStream) {
-    const t = localStream.getAudioTracks()[0];
-    if (t) t.enabled = !t.enabled;
-  }
-}
-
-function toggleCam() {
-  if (localStream) {
-    const t = localStream.getVideoTracks()[0];
-    if (t) t.enabled = !t.enabled;
-  }
-}
-
-function stopRing() {
-  if (ringInterval) { clearInterval(ringInterval); ringInterval = null; }
-}
+function stopRing() { if (ringInterval) { clearInterval(ringInterval); ringInterval = null; } }
 
 // ============ CLEANUP ============
-window.onbeforeunload = async () => {
-  if (me) {
-    await sb.from('users').delete().eq('id', me.id).catch(() => {});
-  }
+window.onbeforeunload = () => {
+  if (me) sb.from('users').delete().eq('id', me.id).catch(() => {});
 };
 
-// ============ BACK BUTTON ============
+// ============ BACK ============
 $('backBtn').onclick = () => {
   currentChat = null;
   show($('emptyState'));
   hide($('chatHeader'));
   hide($('messagesArea'));
   hide($('chatInput'));
-  hide($('typingBar'));
 };
 
 // ============ SEARCH ============
