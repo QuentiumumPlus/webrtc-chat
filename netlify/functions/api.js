@@ -17,6 +17,11 @@ function makeAvatar(name) {
   return { initial: name[0].toUpperCase(), color: c[name.charCodeAt(0) % c.length] };
 }
 
+function getActiveUsers() {
+  const now = Date.now();
+  return [...users.values()].filter(u => now - u.lastPoll < 10000);
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers, body: '' };
@@ -27,51 +32,70 @@ exports.handler = async (event) => {
   const method = event.httpMethod;
 
   try {
+    // KULLANICI GIRIS
     if (parts[0] === 'join' && method === 'POST') {
       const { username } = JSON.parse(event.body);
       if (!username) return err(400, 'Username required');
 
-      // Eski aynı isimli kullanıcıyı temizle
+      // Ayni isimde eski kullaniciyi sil
       for (const [id, u] of users) {
-        if (u.username === username) {
+        if (u.username.toLowerCase() === username.toLowerCase()) {
           users.delete(id);
           messageQueues.delete(id);
         }
       }
 
-      const user = { id: genId(), username, avatar: makeAvatar(username), ts: Date.now() };
+      const user = {
+        id: genId(),
+        username,
+        avatar: makeAvatar(username),
+        joinedAt: Date.now(),
+        lastPoll: Date.now()
+      };
       users.set(user.id, user);
       messageQueues.set(user.id, []);
       return ok(user);
     }
 
-    if (parts[0] === 'users' && method === 'GET') {
-      // Aktif kullanıcıları filtrele (son 10 sn içinde poll yapanlar)
-      const now = Date.now();
-      const active = [...users.values()].filter(u => now - u.ts < 15000);
-      return ok(active);
-    }
-
+    // POLL - KULLANICILAR + MESAJLAR
     if (parts[0] === 'poll' && parts[1] && method === 'GET') {
       const uid = parts[1];
-      const user = users.get(uid);
-      if (!user) return err(404, 'User not found');
-      user.ts = Date.now();
+      let user = users.get(uid);
 
+      // Kullanici yoksa olustur (cold start icin)
+      if (!user) {
+        return err(404, 'User not found - please rejoin');
+      }
+
+      // Son poll zamanini guncelle
+      user.lastPoll = Date.now();
+
+      // Mesajlari al ve temizle
       const msgs = messageQueues.get(uid) || [];
       messageQueues.set(uid, []);
 
-      const now = Date.now();
-      const active = [...users.values()].filter(u => now - u.ts < 15000);
-      return ok({ messages: msgs, users: active });
+      // Aktif kullanici listesi
+      const active = getActiveUsers();
+
+      return ok({
+        messages: msgs,
+        users: active
+      });
     }
 
+    // KULLANICI LISTESI (ayri endpoint)
+    if (parts[0] === 'users' && method === 'GET') {
+      return ok(getActiveUsers());
+    }
+
+    // SIGNAL GONDER
     if (parts[0] === 'signal' && method === 'POST') {
-      const { from, to, type, data } = JSON.parse(event.body);
+      const body = JSON.parse(event.body);
+      const { from, to, type, data } = body;
+
       const sender = users.get(from);
       if (!sender) return err(404, 'Sender not found');
 
-      // Hedef kullanıcı aktif mi kontrol et
       const target = users.get(to);
       if (!target) return err(404, 'Target offline');
 
@@ -85,14 +109,18 @@ exports.handler = async (event) => {
         data,
         ts: Date.now()
       });
+
+      // Kuyruğu limitli tut (son 100 mesaj)
+      if (q.length > 100) q.splice(0, q.length - 100);
       messageQueues.set(to, q);
+
       return ok({ ok: true });
     }
 
+    // AYRIL
     if (parts[0] === 'leave' && parts[1] && method === 'POST') {
-      const uid = parts[1];
-      users.delete(uid);
-      messageQueues.delete(uid);
+      users.delete(parts[1]);
+      messageQueues.delete(parts[1]);
       return ok({ ok: true });
     }
 
@@ -102,5 +130,10 @@ exports.handler = async (event) => {
   }
 };
 
-function ok(body) { return { statusCode: 200, headers, body: JSON.stringify(body) }; }
-function err(code, msg) { return { statusCode: code, headers, body: JSON.stringify({ error: msg }) }; }
+function ok(body) {
+  return { statusCode: 200, headers, body: JSON.stringify(body) };
+}
+
+function err(code, msg) {
+  return { statusCode: code, headers, body: JSON.stringify({ error: msg }) };
+}

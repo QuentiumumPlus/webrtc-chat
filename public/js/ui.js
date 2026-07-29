@@ -145,11 +145,26 @@ class UIManager {
 
   updateUsers(users, currentUserId) {
     this.elements.usersContainer.innerHTML = '';
-    this.elements.userCount.textContent = users.length - 1;
+    const others = users.filter(u => u.id !== currentUserId);
+    this.elements.userCount.textContent = others.length;
 
-    users.forEach(user => {
-      if (user.id === currentUserId) return;
+    if (others.length === 0) {
+      this.elements.usersContainer.innerHTML = `
+        <div style="text-align:center; padding:40px 20px; color:var(--text-muted)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;margin:0 auto 12px;display:block;opacity:0.5">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <p style="font-size:13px">Henuz kimse yok</p>
+          <p style="font-size:11px; margin-top:4px">Baska bir sekmede giris yapin</p>
+        </div>
+      `;
+      return;
+    }
 
+    others.forEach(user => {
       const userEl = this.createUserElement(user);
       this.elements.usersContainer.appendChild(userEl);
     });
