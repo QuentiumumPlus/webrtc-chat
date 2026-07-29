@@ -7,6 +7,7 @@ class ChatApp {
     this.activeCall = null;
     this.pollTimer = null;
     this.signalPollTimer = null;
+    this.ringInterval = null;
     this.init();
   }
 
@@ -46,6 +47,7 @@ class ChatApp {
       this.user = await r.json();
       this.ui.showApp(this.user);
       this.startPoll();
+      window.soundManager?.playNotification();
     } catch (e) {
       console.error('Join error:', e);
       alert('Baglanti hatasi, tekrar deneyin');
@@ -54,9 +56,7 @@ class ChatApp {
 
   startPoll() {
     this.poll();
-    // Kullanici listesi icin yavas poll
     this.pollTimer = setInterval(() => this.poll(), 2000);
-    // Mesajlar icin hizli poll
     this.signalPollTimer = setInterval(() => this.pollSignals(), 500);
   }
 
@@ -105,7 +105,15 @@ class ChatApp {
     if (m.from === this.user?.id) return;
 
     switch (m.type) {
-      case 'offer':
+      case 'offer': {
+        // Gelen arama
+        window.soundManager?.playIncomingRing();
+
+        // Ring'i surekli cal
+        this.ringInterval = setInterval(() => {
+          window.soundManager?.playIncomingRing();
+        }, 1500);
+
         this.activeCall = {
           peerId: m.from,
           callerName: m.name,
@@ -113,14 +121,25 @@ class ChatApp {
           offer: m.data.offer
         };
         this.ui.showIncomingCall(m.name, m.avatar, m.data.callType);
+
+        // 30sn cevap verilmezse kapat
+        setTimeout(() => {
+          if (this.activeCall && this.activeCall.peerId === m.from) {
+            this.rejectCall();
+          }
+        }, 30000);
         break;
+      }
 
       case 'answer': {
+        this.stopRing();
+        window.soundManager?.playConnected();
+
         const peer = this.webrtc.peers.get(m.from);
         if (peer) {
           try {
             await peer.setRemoteDescription(new RTCSessionDescription(m.data.answer));
-            this.ui.updateCallStatus('Baglandi');
+            this.ui.updateCallStatus('Baglandi!');
           } catch (e) { console.error('Answer error:', e); }
         }
         break;
@@ -137,6 +156,7 @@ class ChatApp {
       }
 
       case 'msg':
+        window.soundManager?.playMessage();
         this.ui.addMessage({
           id: m.id,
           senderId: m.from,
@@ -148,6 +168,7 @@ class ChatApp {
         break;
 
       case 'file':
+        window.soundManager?.playNotification();
         this.ui.addMessage({
           id: m.id,
           senderId: m.from,
@@ -162,11 +183,20 @@ class ChatApp {
 
       case 'reject':
       case 'end':
+        this.stopRing();
+        window.soundManager?.playEndCall();
         this.webrtc.endCall(m.from);
         this.ui.hideCallScreen();
         this.ui.hideIncomingCall();
         this.activeCall = null;
         break;
+    }
+  }
+
+  stopRing() {
+    if (this.ringInterval) {
+      clearInterval(this.ringInterval);
+      this.ringInterval = null;
     }
   }
 
@@ -177,7 +207,12 @@ class ChatApp {
       this.signal(peerId, type, data);
     };
 
+    this.webrtc.onRemoteStream = () => {
+      this.ui.updateCallStatus('Gorusme sirasinda...');
+    };
+
     this.webrtc.onMessage = d => {
+      window.soundManager?.playMessage();
       this.ui.addMessage({
         id: Date.now().toString(),
         senderId: this.ui.currentChat,
@@ -202,6 +237,8 @@ class ChatApp {
     };
 
     this.webrtc.onCallEnd = () => {
+      this.stopRing();
+      window.soundManager?.playEndCall();
       this.ui.hideCallScreen();
       this.ui.hideIncomingCall();
       this.activeCall = null;
@@ -210,14 +247,12 @@ class ChatApp {
 
   setupInput() {
     this.ui.elements.sendBtn.addEventListener('click', () => this.send());
-
     this.ui.elements.messageInput.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (!this.ui.elements.sendBtn.disabled) this.send();
       }
     });
-
     this.ui.elements.fileInput.addEventListener('change', e => this.handleFiles(e.target.files));
 
     const dz = this.ui.elements.dropZone;
@@ -242,12 +277,8 @@ class ChatApp {
     };
 
     if (this.ui.currentChatType === 'user') {
-      // Once WebRTC data channel ile dene
       const sent = this.webrtc.sendMessage(this.ui.currentChat, content);
-      if (!sent) {
-        // Basarisizsa signaling ile gonder
-        await this.signal(this.ui.currentChat, 'msg', { content });
-      }
+      if (!sent) await this.signal(this.ui.currentChat, 'msg', { content });
     }
 
     this.ui.addMessage(msg, true, this.user.avatar);
@@ -260,17 +291,11 @@ class ChatApp {
     for (const file of files) {
       const reader = new FileReader();
       reader.onload = async () => {
-        const info = {
-          fileName: file.name,
-          fileSize: file.size,
-          fileData: reader.result
-        };
-
+        const info = { fileName: file.name, fileSize: file.size, fileData: reader.result };
         if (this.ui.currentChatType === 'user') {
           const sent = this.webrtc.sendFile(this.ui.currentChat, info);
           if (!sent) await this.signal(this.ui.currentChat, 'file', info);
         }
-
         this.ui.addMessage({
           id: Date.now().toString(),
           senderId: this.user.id,
@@ -292,21 +317,16 @@ class ChatApp {
 
     this.ui.elements.muteBtn.addEventListener('click', () => {
       const on = this.webrtc.toggleAudio();
-      this.ui.elements.muteBtn.style.opacity = on ? '1' : '0.5';
+      this.ui.elements.muteBtn.classList.toggle('active', !on);
     });
 
     this.ui.elements.cameraBtn.addEventListener('click', async () => {
-      try {
-        await this.webrtc.getLocalStream(true, true);
-        this.ui.elements.cameraBtn.style.opacity = '1';
-      } catch (e) {
-        alert('Kamera erisimi reddedildi');
-      }
+      const on = this.webrtc.toggleVideo();
+      this.ui.elements.cameraBtn.classList.toggle('active', !on);
     });
 
     this.ui.elements.acceptCallBtn.addEventListener('click', () => this.acceptCall());
     this.ui.elements.rejectCallBtn.addEventListener('click', () => this.rejectCall());
-
     this.ui.elements.createGroupBtn.addEventListener('click', () => this.ui.showGroupModal());
     this.ui.elements.groupForm.addEventListener('submit', e => { e.preventDefault(); this.ui.hideGroupModal(); });
   }
@@ -315,14 +335,16 @@ class ChatApp {
     if (!this.ui.currentChat || this.ui.currentChatType !== 'user') return;
 
     try {
-      await this.webrtc.getLocalStream(type === 'voice' || type === 'video', type === 'video');
+      window.soundManager?.playConnecting();
 
+      await this.webrtc.getLocalStream(type === 'voice' || type === 'video', type === 'video');
       const peer = this.webrtc.createPeerConnection(this.ui.currentChat);
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
 
       const sent = await this.signal(this.ui.currentChat, 'offer', { offer, callType: type });
       if (!sent) {
+        window.soundManager?.playEndCall();
         alert('Kullanici cevrimdisi');
         this.webrtc.endCall(this.ui.currentChat);
         return;
@@ -332,28 +354,27 @@ class ChatApp {
       this.ui.updateCallStatus('Aranıyor...');
       this.activeCall = { peerId: this.ui.currentChat, callType: type };
 
-      // 30 sn timeout
+      // 30sn timeout
       setTimeout(() => {
         if (this.activeCall && this.activeCall.peerId === this.ui.currentChat) {
           this.endCall();
-          alert('Cevap alinamadi');
         }
       }, 30000);
 
     } catch (e) {
       console.error('Call error:', e);
+      window.soundManager?.playEndCall();
       alert('Mikrofon/kamera erisimi reddedildi');
     }
   }
 
   async acceptCall() {
     if (!this.activeCall) return;
+    this.stopRing();
 
     try {
-      await this.webrtc.getLocalStream(
-        this.activeCall.callType === 'voice' || this.activeCall.callType === 'video',
-        this.activeCall.callType === 'video'
-      );
+      const type = this.activeCall.callType;
+      await this.webrtc.getLocalStream(type === 'voice' || type === 'video', type === 'video');
 
       const peer = this.webrtc.createPeerConnection(this.activeCall.peerId);
       await peer.setRemoteDescription(new RTCSessionDescription(this.activeCall.offer));
@@ -361,22 +382,29 @@ class ChatApp {
       await peer.setLocalDescription(answer);
 
       await this.signal(this.activeCall.peerId, 'answer', { answer });
+      window.soundManager?.playConnected();
+
       this.ui.hideIncomingCall();
-      this.ui.showCallScreen(this.activeCall.callerName, null, this.activeCall.callType);
-      this.ui.updateCallStatus('Baglandi');
+      this.ui.showCallScreen(this.activeCall.callerName, null, type);
+      this.ui.updateCallStatus('Baglandi!');
     } catch (e) {
       console.error('Accept error:', e);
+      window.soundManager?.playEndCall();
     }
   }
 
   async rejectCall() {
     if (!this.activeCall) return;
+    this.stopRing();
+    window.soundManager?.playEndCall();
     await this.signal(this.activeCall.peerId, 'reject', {});
     this.ui.hideIncomingCall();
     this.activeCall = null;
   }
 
   async endCall() {
+    this.stopRing();
+    window.soundManager?.playEndCall();
     if (this.activeCall) {
       await this.signal(this.activeCall.peerId, 'end', {});
       this.webrtc.endCall(this.activeCall.peerId);

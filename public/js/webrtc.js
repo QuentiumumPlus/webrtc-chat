@@ -7,38 +7,55 @@ class WebRTCManager {
     this.onMessage = null;
     this.onFile = null;
     this.onCallEnd = null;
+    this.onRemoteStream = null;
   }
 
   createPeerConnection(peerId) {
-    // Eski peer'i temizle
     if (this.peers.has(peerId)) {
-      this.peers.get(peerId).close();
+      try { this.peers.get(peerId).close(); } catch (e) {}
       this.peers.delete(peerId);
       this.dataChannels.delete(peerId);
     }
 
-    const peer = new RTCPeerConnection({
+    const config = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
       ]
-    });
+    };
+
+    const peer = new RTCPeerConnection(config);
     this.peers.set(peerId, peer);
 
-    peer.onicecandidate = e => {
-      if (e.candidate && this.onSignal) {
-        this.onSignal(peerId, 'ice', { candidate: e.candidate });
+    // Local stream'deki track'leri ekle
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        peer.addTrack(track, this.localStream);
+      });
+    }
+
+    // Remote stream geldiginde
+    peer.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        const remoteVideo = document.getElementById('remote-video');
+        if (remoteVideo) {
+          remoteVideo.srcObject = event.streams[0];
+        }
+        if (this.onRemoteStream) this.onRemoteStream(event.streams[0]);
       }
     };
 
-    peer.ontrack = e => {
-      const v = document.getElementById('remote-video');
-      if (v && e.streams[0]) v.srcObject = e.streams[0];
+    // ICE candidate
+    peer.onicecandidate = (event) => {
+      if (event.candidate && this.onSignal) {
+        this.onSignal(peerId, 'ice', { candidate: event.candidate });
+      }
     };
 
-    peer.ondatachannel = e => this.setupChannel(peerId, e.channel);
-
+    // Connection state
     peer.onconnectionstatechange = () => {
       const state = peer.connectionState;
       if (state === 'disconnected' || state === 'failed' || state === 'closed') {
@@ -48,19 +65,37 @@ class WebRTCManager {
 
     peer.oniceconnectionstatechange = () => {
       const state = peer.iceConnectionState;
-      if (state === 'failed' || state === 'disconnected') {
-        this.endCall(peerId);
+      if (state === 'failed') {
+        this.restartIce(peerId);
+      } else if (state === 'disconnected') {
+        // Biraz bekle, belki düzelir
+        setTimeout(() => {
+          if (peer.iceConnectionState === 'disconnected') {
+            this.endCall(peerId);
+          }
+        }, 5000);
       }
     };
 
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(t => peer.addTrack(t, this.localStream));
-    }
+    // Data channel
+    peer.ondatachannel = (event) => {
+      this.setupChannel(peerId, event.channel);
+    };
 
     const ch = peer.createDataChannel('chat', { ordered: true });
     this.setupChannel(peerId, ch);
 
     return peer;
+  }
+
+  restartIce(peerId) {
+    const peer = this.peers.get(peerId);
+    if (peer && peer.signalingState === 'stable') {
+      peer.createOffer({ iceRestart: true }).then(offer => {
+        peer.setLocalDescription(offer);
+        this.onSignal(peerId, 'offer', { offer });
+      }).catch(e => console.error('ICE restart error:', e));
+    }
   }
 
   setupChannel(peerId, ch) {
@@ -70,16 +105,16 @@ class WebRTCManager {
     ch.onclose = () => {
       this.dataChannels.delete(peerId);
     };
-    ch.onerror = e => {
+    ch.onerror = (e) => {
       console.error('Data channel error:', e);
     };
-    ch.onmessage = e => {
+    ch.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
         if (d.type === 'message' && this.onMessage) this.onMessage(d);
         else if (d.type === 'file' && this.onFile) this.onFile(d);
       } catch (err) {
-        console.error('Channel message parse error:', err);
+        console.error('Channel parse error:', err);
       }
     };
     if (ch.readyState === 'open') {
@@ -93,9 +128,7 @@ class WebRTCManager {
       try {
         ch.send(JSON.stringify({ type: 'message', content: msg, timestamp: Date.now() }));
         return true;
-      } catch (e) {
-        return false;
-      }
+      } catch (e) { return false; }
     }
     return false;
   }
@@ -106,41 +139,78 @@ class WebRTCManager {
       try {
         ch.send(JSON.stringify({ type: 'file', ...info }));
         return true;
-      } catch (e) {
-        return false;
-      }
+      } catch (e) { return false; }
     }
     return false;
   }
 
   async getLocalStream(audio, video) {
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio, video });
+      // Once mevcut stream'i temizle
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(t => t.stop());
+      }
+
+      const constraints = {
+        audio: audio ? {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000
+        } : false,
+        video: video ? {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user'
+        } : false
+      };
+
+      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Local video'yu goster
       const lv = document.getElementById('local-video');
-      if (lv && video) lv.srcObject = this.localStream;
-      this.peers.forEach(p => {
-        this.localStream.getTracks().forEach(t => p.addTrack(t, this.localStream));
+      if (lv && video) {
+        lv.srcObject = this.localStream;
+      }
+
+      // Mevcut peer'lere track ekle
+      this.peers.forEach(peer => {
+        this.localStream.getTracks().forEach(track => {
+          const senders = peer.getSenders();
+          const existing = senders.find(s => s.track && s.track.kind === track.kind);
+          if (existing) {
+            existing.replaceTrack(track);
+          } else {
+            peer.addTrack(track, this.localStream);
+          }
+        });
       });
+
       return this.localStream;
     } catch (e) {
+      console.error('getUserMedia error:', e);
       throw e;
     }
   }
 
   toggleAudio() {
-    const t = this.localStream?.getAudioTracks()[0];
-    if (t) {
-      t.enabled = !t.enabled;
-      return t.enabled;
+    if (this.localStream) {
+      const t = this.localStream.getAudioTracks()[0];
+      if (t) {
+        t.enabled = !t.enabled;
+        return t.enabled;
+      }
     }
     return false;
   }
 
   toggleVideo() {
-    const t = this.localStream?.getVideoTracks()[0];
-    if (t) {
-      t.enabled = !t.enabled;
-      return t.enabled;
+    if (this.localStream) {
+      const t = this.localStream.getVideoTracks()[0];
+      if (t) {
+        t.enabled = !t.enabled;
+        return t.enabled;
+      }
     }
     return false;
   }

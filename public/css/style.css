@@ -41,6 +41,11 @@ body {
   line-height: 1.5;
   overflow: hidden;
   height: 100vh;
+  background-image: 
+    radial-gradient(ellipse at 20% 20%, rgba(108, 92, 231, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 80%, rgba(0, 210, 160, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 50%, rgba(255, 107, 107, 0.04) 0%, transparent 50%);
+  background-attachment: fixed;
 }
 
 .hidden {
@@ -73,8 +78,15 @@ body {
   justify-content: center;
   background: var(--bg-primary);
   background-image: 
-    radial-gradient(ellipse at 20% 50%, rgba(108, 92, 231, 0.15) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 50%, rgba(0, 210, 160, 0.1) 0%, transparent 50%);
+    radial-gradient(ellipse at 20% 50%, rgba(108, 92, 231, 0.2) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 50%, rgba(0, 210, 160, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 100%, rgba(255, 107, 107, 0.1) 0%, transparent 50%);
+  animation: bgPulse 8s ease-in-out infinite;
+}
+
+@keyframes bgPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
 }
 
 .login-container {
@@ -110,6 +122,12 @@ body {
   align-items: center;
   justify-content: center;
   box-shadow: 0 8px 32px var(--accent-glow);
+  animation: logoFloat 3s ease-in-out infinite;
+}
+
+@keyframes logoFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
 }
 
 .logo-icon svg {
@@ -1151,4 +1169,190 @@ body {
 
 .version-badge:hover {
   opacity: 1;
+}
+
+/* Active Button States */
+.call-btn.active {
+  background: var(--danger) !important;
+  border-color: var(--danger) !important;
+  animation: pulseRed 1s ease-in-out infinite;
+}
+
+@keyframes pulseRed {
+  0%, 100% { box-shadow: 0 0 0 0 var(--danger-glow); }
+  50% { box-shadow: 0 0 0 8px transparent; }
+}
+
+.icon-btn.active {
+  background: var(--danger);
+  color: white;
+}
+
+/* Call Animation */
+@keyframes callPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.call-screen .call-info {
+  animation: callPulse 2s ease-in-out infinite;
+}
+
+/* Message Input Focus */
+.message-input-container:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* User Item Hover Effect */
+.user-item {
+  transition: all 0.2s ease;
+}
+
+.user-item:hover {
+  transform: translateX(4px);
+}
+
+.user-item.active {
+  transform: translateX(4px);
+}
+
+/* Smooth transitions */
+* {
+  transition-property: none;
+}
+
+button, .user-item, .group-item, .message {
+  transition: all 0.2s ease;
+}
+
+/* Glass Effect */
+.sidebar {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Incoming Call Animation */
+.incoming-call-content {
+  animation: incomingPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes incomingPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.02); opacity: 0.9; }
+}
+
+/* Video Container */
+.remote-video {
+  border-radius: 0;
+}
+
+.local-video {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Status Dot Animation */
+.status-dot.online {
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--success-glow); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+
+/* Typing Indicator */
+.typing-indicator {
+  background: var(--bg-secondary);
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  margin: 0 24px 8px;
+}
+
+/* File Drop Zone */
+.drop-zone {
+  background: rgba(108, 92, 231, 0.05);
+}
+
+.drop-zone.dragover {
+  background: rgba(108, 92, 231, 0.15);
+  border-color: var(--accent);
+}
+
+/* Badge Glow */
+.badge {
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+}
+
+/* Login Button Shine Effect */
+.btn-primary {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    transparent 100%
+  );
+  transform: rotate(45deg);
+  animation: shine 3s ease-in-out infinite;
+}
+
+@keyframes shine {
+  0% { transform: translateX(-100%) rotate(45deg); }
+  100% { transform: translateX(100%) rotate(45deg); }
+}
+
+/* Background Particles */
+.bg-particles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  overflow: hidden;
+}
+
+.particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 50%;
+  opacity: 0.3;
+  animation: float 15s infinite ease-in-out;
+}
+
+.particle:nth-child(1) { left: 10%; top: 20%; animation-delay: 0s; animation-duration: 20s; }
+.particle:nth-child(2) { left: 80%; top: 70%; animation-delay: -3s; animation-duration: 18s; background: var(--success); }
+.particle:nth-child(3) { left: 50%; top: 40%; animation-delay: -6s; animation-duration: 22s; }
+.particle:nth-child(4) { left: 20%; top: 80%; animation-delay: -9s; animation-duration: 16s; background: var(--warning); }
+.particle:nth-child(5) { left: 70%; top: 30%; animation-delay: -12s; animation-duration: 24s; background: var(--danger); }
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0) translateX(0) scale(1);
+    opacity: 0.3;
+  }
+  25% {
+    transform: translateY(-100px) translateX(50px) scale(1.5);
+    opacity: 0.6;
+  }
+  50% {
+    transform: translateY(-200px) translateX(-30px) scale(1);
+    opacity: 0.3;
+  }
+  75% {
+    transform: translateY(-100px) translateX(-50px) scale(1.5);
+    opacity: 0.6;
+  }
 }
