@@ -1,12 +1,8 @@
 {
   "name": "webrtc-chat",
   "version": "1.0.0",
-  "description": "Peer-to-peer messaging with WebRTC",
+  "description": "WebRTC Peer-to-Peer Chat",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "dependencies": {
-    "express": "^4.21.0"
+    "build": "echo 'Static site'"
   }
 }

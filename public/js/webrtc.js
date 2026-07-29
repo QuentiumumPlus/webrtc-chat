@@ -1,202 +1,118 @@
 class WebRTCManager {
-  constructor(socket) {
-    this.socket = socket;
+  constructor() {
     this.peers = new Map();
     this.localStream = null;
     this.dataChannels = new Map();
+    this.onSignal = null;
     this.onMessage = null;
     this.onFile = null;
-    this.onCall = null;
     this.onCallEnd = null;
-    this.onSignal = null;
   }
 
   createPeerConnection(peerId) {
-    const config = {
+    const peer = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' }
       ]
-    };
-
-    const peer = new RTCPeerConnection(config);
+    });
     this.peers.set(peerId, peer);
 
-    peer.onicecandidate = (event) => {
-      if (event.candidate && this.onSignal) {
-        this.onSignal(peerId, 'ice-candidate', {
-          candidate: event.candidate
-        });
-      }
+    peer.onicecandidate = e => {
+      if (e.candidate && this.onSignal) this.onSignal(peerId, 'ice', { candidate: e.candidate });
     };
 
-    peer.ontrack = (event) => {
-      const remoteVideo = document.getElementById('remote-video');
-      if (remoteVideo && event.streams[0]) {
-        remoteVideo.srcObject = event.streams[0];
-      }
+    peer.ontrack = e => {
+      const v = document.getElementById('remote-video');
+      if (v && e.streams[0]) v.srcObject = e.streams[0];
     };
 
-    peer.ondatachannel = (event) => {
-      this.setupDataChannel(peerId, event.channel);
-    };
+    peer.ondatachannel = e => this.setupChannel(peerId, e.channel);
 
     peer.onconnectionstatechange = () => {
-      if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed') {
-        this.endCall(peerId);
-      }
+      if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed') this.endCall(peerId);
     };
 
     if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        peer.addTrack(track, this.localStream);
-      });
+      this.localStream.getTracks().forEach(t => peer.addTrack(t, this.localStream));
     }
 
-    const dataChannel = peer.createDataChannel('chat', {
-      ordered: true
-    });
-    this.setupDataChannel(peerId, dataChannel);
-
+    const ch = peer.createDataChannel('chat', { ordered: true });
+    this.setupChannel(peerId, ch);
     return peer;
   }
 
-  setupDataChannel(peerId, channel) {
-    channel.onopen = () => {
-      console.log(`Data channel opened with ${peerId}`);
-      this.dataChannels.set(peerId, channel);
+  setupChannel(peerId, ch) {
+    ch.onopen = () => this.dataChannels.set(peerId, ch);
+    ch.onclose = () => this.dataChannels.delete(peerId);
+    ch.onmessage = e => {
+      const d = JSON.parse(e.data);
+      if (d.type === 'message' && this.onMessage) this.onMessage(d);
+      else if (d.type === 'file' && this.onFile) this.onFile(d);
     };
-
-    channel.onclose = () => {
-      console.log(`Data channel closed with ${peerId}`);
-      this.dataChannels.delete(peerId);
-    };
-
-    channel.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === 'message' && this.onMessage) {
-        this.onMessage(data);
-      } else if (data.type === 'file' && this.onFile) {
-        this.onFile(data);
-      }
-    };
-
-    if (channel.readyState === 'open') {
-      this.dataChannels.set(peerId, channel);
-    }
+    if (ch.readyState === 'open') this.dataChannels.set(peerId, ch);
   }
 
-  sendMessage(peerId, message) {
-    const channel = this.dataChannels.get(peerId);
-    if (channel && channel.readyState === 'open') {
-      channel.send(JSON.stringify({
-        type: 'message',
-        content: message,
-        timestamp: Date.now()
-      }));
+  sendMessage(peerId, msg) {
+    const ch = this.dataChannels.get(peerId);
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'message', content: msg, timestamp: Date.now() }));
       return true;
     }
     return false;
   }
 
-  sendFile(peerId, fileInfo) {
-    const channel = this.dataChannels.get(peerId);
-    if (channel && channel.readyState === 'open') {
-      channel.send(JSON.stringify({
-        type: 'file',
-        ...fileInfo
-      }));
+  sendFile(peerId, info) {
+    const ch = this.dataChannels.get(peerId);
+    if (ch && ch.readyState === 'open') {
+      ch.send(JSON.stringify({ type: 'file', ...info }));
       return true;
     }
     return false;
   }
 
-  async getLocalStream(audio = true, video = false) {
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio,
-        video
-      });
-
-      const localVideo = document.getElementById('local-video');
-      if (localVideo && video) {
-        localVideo.srcObject = this.localStream;
-      }
-
-      this.peers.forEach((peer) => {
-        this.localStream.getTracks().forEach(track => {
-          peer.addTrack(track, this.localStream);
-        });
-      });
-
-      return this.localStream;
-    } catch (error) {
-      console.error('Error getting local stream:', error);
-      throw error;
-    }
+  async getLocalStream(audio, video) {
+    this.localStream = await navigator.mediaDevices.getUserMedia({ audio, video });
+    const lv = document.getElementById('local-video');
+    if (lv && video) lv.srcObject = this.localStream;
+    this.peers.forEach(p => this.localStream.getTracks().forEach(t => p.addTrack(t, this.localStream)));
+    return this.localStream;
   }
 
   toggleAudio() {
-    if (this.localStream) {
-      const audioTrack = this.localStream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        return audioTrack.enabled;
-      }
-    }
+    const t = this.localStream?.getAudioTracks()[0];
+    if (t) { t.enabled = !t.enabled; return t.enabled; }
     return false;
   }
 
   toggleVideo() {
-    if (this.localStream) {
-      const videoTrack = this.localStream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        return videoTrack.enabled;
-      }
-    }
+    const t = this.localStream?.getVideoTracks()[0];
+    if (t) { t.enabled = !t.enabled; return t.enabled; }
     return false;
   }
 
   endCall(peerId) {
-    const peer = this.peers.get(peerId);
-    if (peer) {
-      peer.close();
-      this.peers.delete(peerId);
-    }
-
+    this.peers.get(peerId)?.close();
+    this.peers.delete(peerId);
     this.dataChannels.delete(peerId);
-
-    if (this.peers.size === 0) {
-      this.stopLocalStream();
-    }
-
-    if (this.onCallEnd) {
-      this.onCallEnd({ peerId });
-    }
+    if (!this.peers.size) this.stopStream();
+    if (this.onCallEnd) this.onCallEnd();
   }
 
-  stopLocalStream() {
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop());
-      this.localStream = null;
-
-      const localVideo = document.getElementById('local-video');
-      const remoteVideo = document.getElementById('remote-video');
-      if (localVideo) localVideo.srcObject = null;
-      if (remoteVideo) remoteVideo.srcObject = null;
-    }
+  stopStream() {
+    this.localStream?.getTracks().forEach(t => t.stop());
+    this.localStream = null;
+    const lv = document.getElementById('local-video');
+    const rv = document.getElementById('remote-video');
+    if (lv) lv.srcObject = null;
+    if (rv) rv.srcObject = null;
   }
 
   endAllCalls() {
-    this.peers.forEach((peer, peerId) => {
-      peer.close();
-    });
+    this.peers.forEach((p, id) => p.close());
     this.peers.clear();
     this.dataChannels.clear();
-    this.stopLocalStream();
+    this.stopStream();
   }
 }
 
