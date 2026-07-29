@@ -30,6 +30,15 @@ exports.handler = async (event) => {
     if (parts[0] === 'join' && method === 'POST') {
       const { username } = JSON.parse(event.body);
       if (!username) return err(400, 'Username required');
+
+      // Eski aynı isimli kullanıcıyı temizle
+      for (const [id, u] of users) {
+        if (u.username === username) {
+          users.delete(id);
+          messageQueues.delete(id);
+        }
+      }
+
       const user = { id: genId(), username, avatar: makeAvatar(username), ts: Date.now() };
       users.set(user.id, user);
       messageQueues.set(user.id, []);
@@ -37,7 +46,10 @@ exports.handler = async (event) => {
     }
 
     if (parts[0] === 'users' && method === 'GET') {
-      return ok([...users.values()]);
+      // Aktif kullanıcıları filtrele (son 10 sn içinde poll yapanlar)
+      const now = Date.now();
+      const active = [...users.values()].filter(u => now - u.ts < 15000);
+      return ok(active);
     }
 
     if (parts[0] === 'poll' && parts[1] && method === 'GET') {
@@ -45,18 +57,42 @@ exports.handler = async (event) => {
       const user = users.get(uid);
       if (!user) return err(404, 'User not found');
       user.ts = Date.now();
+
       const msgs = messageQueues.get(uid) || [];
       messageQueues.set(uid, []);
-      return ok({ messages: msgs, users: [...users.values()] });
+
+      const now = Date.now();
+      const active = [...users.values()].filter(u => now - u.ts < 15000);
+      return ok({ messages: msgs, users: active });
     }
 
     if (parts[0] === 'signal' && method === 'POST') {
       const { from, to, type, data } = JSON.parse(event.body);
       const sender = users.get(from);
       if (!sender) return err(404, 'Sender not found');
+
+      // Hedef kullanıcı aktif mi kontrol et
+      const target = users.get(to);
+      if (!target) return err(404, 'Target offline');
+
       const q = messageQueues.get(to) || [];
-      q.push({ id: genId(), from, name: sender.username, avatar: sender.avatar, type, data, ts: Date.now() });
+      q.push({
+        id: genId(),
+        from,
+        name: sender.username,
+        avatar: sender.avatar,
+        type,
+        data,
+        ts: Date.now()
+      });
       messageQueues.set(to, q);
+      return ok({ ok: true });
+    }
+
+    if (parts[0] === 'leave' && parts[1] && method === 'POST') {
+      const uid = parts[1];
+      users.delete(uid);
+      messageQueues.delete(uid);
       return ok({ ok: true });
     }
 
