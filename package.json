@@ -1,8 +1,4 @@
 {
-  "name": "webrtc-chat",
-  "version": "1.0.0",
-  "description": "WebRTC Peer-to-Peer Chat",
-  "scripts": {
-    "build": "echo 'Static site'"
-  }
+  "name": "chatzone",
+  "version": "2.0.0"
 }

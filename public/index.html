@@ -2,102 +2,166 @@
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ChatZone</title>
 <link rel="stylesheet" href="css/style.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
-<!-- LOGIN -->
-<div id="loginPage" class="page">
-  <div class="login-box">
-    <div class="logo">ChatZone</div>
-    <p class="sub">Peer-to-Peer Mesajlasma</p>
-    <form id="loginForm">
-      <input type="text" id="nameInput" placeholder="Nickin..." maxlength="20" required autofocus>
-      <button type="submit">Katil</button>
-    </form>
-    <div class="features">
-      <span>E2E Sifreli</span>
-      <span>P2P Hizli</span>
-      <span>Sesli/Goruntulu</span>
+<div id="app">
+  <!-- LOGIN -->
+  <div id="loginView" class="login-view">
+    <div class="login-card">
+      <div class="login-logo">
+        <div class="logo-circle">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h1>ChatZone</h1>
+        <p>Guvenli peer-to-peer mesajlasma</p>
+      </div>
+      <form id="loginForm">
+        <div class="input-wrap">
+          <input type="text" id="usernameInput" placeholder="Nickinizi girin" maxlength="16" required autofocus>
+        </div>
+        <button type="submit" id="loginBtn">
+          <span>Sohbete Katil</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </form>
+      <div class="login-badges">
+        <span>Uctan Uca Sifreli</span>
+        <span>P2P Baglanti</span>
+        <span>Ucretsiz</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="mainView" class="main-view hidden">
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-dot"></div>
+          <span>ChatZone</span>
+        </div>
+        <div class="online-badge" id="onlineCount">0</div>
+      </div>
+      <div class="sidebar-search">
+        <input type="text" id="searchInput" placeholder="Ara...">
+      </div>
+      <div class="user-list" id="userList"></div>
+      <div class="sidebar-footer">
+        <div class="my-avatar" id="myAvatar"></div>
+        <div class="my-name" id="myName"></div>
+        <div class="my-status">Cevrimici</div>
+      </div>
+    </aside>
+
+    <!-- CHAT AREA -->
+    <main class="chat-area">
+      <!-- Empty state -->
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon">
+          <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h4" opacity="0.5"/></svg>
+        </div>
+        <h2>ChatZone'a Hos Geldiniz</h2>
+        <p>Sol panelden bir kisi secerek sohbete baslayabilirsiniz</p>
+      </div>
+
+      <!-- Chat header -->
+      <div id="chatHeader" class="chat-header hidden">
+        <button class="back-btn" id="backBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <div class="chat-user-info">
+          <div class="chat-avatar" id="chatAvatar"></div>
+          <div>
+            <div class="chat-name" id="chatName"></div>
+            <div class="chat-status" id="chatStatus">Cevrimici</div>
+          </div>
+        </div>
+        <div class="chat-actions">
+          <button class="act-btn" id="btnVoice" title="Sesli Arama">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          </button>
+          <button class="act-btn" id="btnVideo" title="Goruntulu Arama">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          </button>
+          <button class="act-btn" id="btnFile" title="Dosya Gonder">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div id="messagesArea" class="messages-area hidden">
+        <div id="messages" class="messages"></div>
+      </div>
+
+      <!-- Typing -->
+      <div id="typingBar" class="typing-bar hidden">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        <span>yaziyor...</span>
+      </div>
+
+      <!-- Input -->
+      <div id="chatInput" class="chat-input hidden">
+        <input type="file" id="fileInput" hidden>
+        <button class="input-btn" id="attachBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <textarea id="msgInput" placeholder="Mesaj yazin..." rows="1"></textarea>
+        <button class="send-btn" id="sendBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+    </main>
+
+    <!-- CALL OVERLAY -->
+    <div id="callOverlay" class="call-overlay hidden">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay playsinline muted></video>
+      <div class="call-top">
+        <div class="call-avatar" id="callAvatar"></div>
+        <div class="call-name" id="callName"></div>
+        <div class="call-status-text" id="callStatusText">Baglaniyor...</div>
+      </div>
+      <div class="call-bottom">
+        <button class="cbtn" id="callMute" title="Sessiz">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <button class="cbtn" id="callCam" title="Kamera">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        </button>
+        <button class="cbtn end-call" id="callEnd" title="Kapat">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- INCOMING CALL -->
+    <div id="incomingOverlay" class="incoming-overlay hidden">
+      <div class="incoming-card">
+        <div class="incoming-avatar" id="incAvatar"></div>
+        <div class="incoming-name" id="incName"></div>
+        <div class="incoming-type" id="incType">Arama...</div>
+        <div class="incoming-btns">
+          <button class="cbtn accept-call" id="incAccept">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          </button>
+          <button class="cbtn reject-call" id="incReject">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.5 13.5L21 18l-4.5 4.5m-7-14L3 6l4.5-4.5"/></svg>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- APP -->
-<div id="appPage" class="page hidden">
-  <!-- SOL PANEL -->
-  <aside id="sidebar">
-    <div class="sb-head">
-      <span class="brand">ChatZone</span>
-      <span id="userCount" class="count">0 kisi</span>
-    </div>
-    <div id="userList" class="sb-list"></div>
-    <div class="sb-foot">
-      <div id="myInfo" class="my-info"></div>
-    </div>
-  </aside>
-
-  <!-- ANA ALAN -->
-  <main id="mainArea">
-    <!-- Bos ekran -->
-    <div id="emptyScreen" class="empty">
-      <div class="empty-icon">💬</div>
-      <h2>Sohbete Basla</h2>
-      <p>Sol panelden bir kisi secin</p>
-    </div>
-
-    <!-- Sohbet ekrani -->
-    <div id="chatScreen" class="hidden">
-      <div class="chat-head">
-        <div id="chatUser" class="chat-user"></div>
-        <div class="chat-actions">
-          <button id="btnVoice" class="action-btn" title="Sesli Arama">📞</button>
-          <button id="btnVideo" class="action-btn" title="Goruntulu Arama">📹</button>
-          <button id="btnFile" class="action-btn" title="Dosya Gonder">📎</button>
-        </div>
-      </div>
-      <div id="messages" class="messages"></div>
-      <div id="typing" class="typing hidden">yaziyor...</div>
-      <div class="chat-foot">
-        <input type="file" id="fileInput" hidden>
-        <textarea id="msgInput" placeholder="Mesaj yazin..." rows="1"></textarea>
-        <button id="btnSend">➤</button>
-      </div>
-    </div>
-
-    <!-- Arama ekrani -->
-    <div id="callScreen" class="hidden call-screen">
-      <video id="remoteVideo" autoplay playsinline></video>
-      <video id="localVideo" autoplay playsinline muted></video>
-      <div class="call-info">
-        <div id="callName" class="call-name"></div>
-        <div id="callStatus" class="call-status">Araniyor...</div>
-      </div>
-      <div class="call-btns">
-        <button id="btnMute" class="call-btn">🎤</button>
-        <button id="btnCam" class="call-btn">📷</button>
-        <button id="btnEnd" class="call-btn end">📞</button>
-      </div>
-    </div>
-
-    <!-- Gelen arama -->
-    <div id="incomingCall" class="hidden incoming">
-      <div class="incoming-box">
-        <div id="callerName" class="caller-name"></div>
-        <div class="caller-type" id="callerType">Arama...</div>
-        <div class="incoming-btns">
-          <button id="btnAccept" class="call-btn accept">📞</button>
-          <button id="btnReject" class="call-btn reject">✕</button>
-        </div>
-      </div>
-    </div>
-  </main>
-</div>
-
-<div class="version">v1.0 | WebRTC P2P</div>
-
+<div class="version-tag">v2.0</div>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -1,398 +1,574 @@
+// ============ CONFIG ============
+const SUPABASE_URL = 'https://wlohcooukadbiaysxufp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_Og0wFXrpDQVev7Y56YaEmw_jn_xfoNu';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
 // ============ SOUND ============
 const SFX = {
   ctx: null,
-  init() {
+  get() {
     if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (this.ctx.state === 'suspended') this.ctx.resume();
+    return this.ctx;
   },
-  beep(freq, dur, vol = 0.2) {
-    this.init();
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+  tone(freq, dur, vol = 0.15) {
+    const c = this.get(), o = c.createOscillator(), g = c.createGain();
     o.type = 'sine'; o.frequency.value = freq;
-    g.gain.setValueAtTime(vol, this.ctx.currentTime);
-    g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + dur);
-    o.connect(g); g.connect(this.ctx.destination);
-    o.start(); o.stop(this.ctx.currentTime + dur);
+    g.gain.setValueAtTime(vol, c.currentTime);
+    g.gain.linearRampToValueAtTime(0, c.currentTime + dur);
+    o.connect(g); g.connect(c.destination);
+    o.start(); o.stop(c.currentTime + dur);
   },
-  msg() { this.beep(800, 0.1, 0.1); },
-  ring() { this.beep(440, 0.3); setTimeout(() => this.beep(440, 0.3), 400); },
-  connect() { this.beep(523, 0.15); setTimeout(() => this.beep(659, 0.15), 100); setTimeout(() => this.beep(784, 0.2), 200); },
-  end() { this.beep(400, 0.15); setTimeout(() => this.beep(300, 0.2), 200); },
-  notify() { this.beep(660, 0.1, 0.1); }
+  msg() { this.tone(880, 0.08); },
+  ring() { this.tone(440, 0.25); setTimeout(() => this.tone(440, 0.25), 350); },
+  connected() { this.tone(523, 0.12); setTimeout(() => this.tone(659, 0.12), 80); setTimeout(() => this.tone(784, 0.15), 160); },
+  ended() { this.tone(400, 0.12); setTimeout(() => this.tone(300, 0.15), 150); }
 };
 
 // ============ STATE ============
 let me = null;
-let users = [];
-let chatWith = null;
-let chatType = null;
-let webrtc = null;
-let activeCall = null;
-let ringTimer = null;
-
-// ============ API ============
-async function api(path, body) {
-  const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
-  const r = await fetch('/api/' + path, opt);
-  return r.json();
-}
+let currentChat = null;
+let callPeer = null;
+let ringInterval = null;
+let pollInterval = null;
 
 // ============ DOM ============
-const $ = id => document.getElementById(id);
-const show = el => el.classList.remove('hidden');
-const hide = el => el.classList.add('hidden');
+const $ = s => document.getElementById(s);
+const show = el => el && el.classList.remove('hidden');
+const hide = el => el && el.classList.add('hidden');
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+const avatar = name => {
+  const colors = ['#e17055','#00b894','#6c5ce7','#fdcb6e','#e84393','#00cec9','#d63031','#0984e3'];
+  return { initial: name[0].toUpperCase(), color: colors[name.charCodeAt(0) % colors.length] };
+};
+const timeStr = ts => new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 
 // ============ LOGIN ============
 $('loginForm').onsubmit = async e => {
   e.preventDefault();
-  const name = $('nameInput').value.trim();
+  const name = $('usernameInput').value.trim();
   if (!name) return;
-  me = await api('join', { username: name });
-  if (me.error) return alert(me.error);
-  SFX.notify();
-  hide($('loginPage')); show($('appPage'));
-  $('myInfo').textContent = me.username;
-  startPoll();
+
+  $('loginBtn').disabled = true;
+  $('loginBtn').innerHTML = '<span>Katiliyor...</span>';
+
+  // Eski ayni isimde kullaniciyi sil
+  await sb.from('users').delete().eq('username', name);
+
+  const av = avatar(name);
+  const { data, error } = await sb.from('users').insert({
+    id: crypto.randomUUID(),
+    username: name,
+    avatar: av,
+    last_seen: Date.now()
+  }).select().single();
+
+  if (error) { alert('Hata: ' + error.message); location.reload(); return; }
+
+  me = data;
+  hide($('loginView'));
+  show($('mainView'));
+  $('myAvatar').style.background = av.color;
+  $('myAvatar').textContent = av.initial;
+  $('myName').textContent = name;
+
+  startApp();
 };
 
-// ============ POLLING ============
-let pollId, sigId;
-function startPoll() {
-  poll(); pollId = setInterval(poll, 2000);
-  sigPoll(); sigId = setInterval(sigPoll, 800);
+// ============ APP ============
+function startApp() {
+  // Polling baslat
+  refreshUsers();
+  pollInterval = setInterval(refreshUsers, 2000);
+
+  // Heartbeat - kendini guncelle
+  heartbeat();
+  setInterval(heartbeat, 5000);
+
+  // Realtime mesajlar
+  listenMessages();
 }
 
-async function poll() {
+async function heartbeat() {
   if (!me) return;
-  const d = await api('poll/' + me.id);
-  if (d.error) return;
-  users = d.users || [];
-  renderUsers();
-  if (d.messages) d.messages.forEach(handleSignal);
+  await sb.from('users').update({ last_seen: Date.now() }).eq('id', me.id);
 }
 
-async function sigPoll() {
-  if (!me) return;
-  const d = await api('poll/' + me.id);
-  if (d.error) return;
-  if (d.messages && d.messages.length) d.messages.forEach(handleSignal);
-}
+async function refreshUsers() {
+  const { data } = await sb.from('users').select('*').gt('last_seen', Date.now() - 8000);
+  if (!data) return;
 
-// ============ USERS ============
-function renderUsers() {
+  const others = data.filter(u => u.id !== me.id);
+  $('onlineCount').textContent = others.length;
+
   const list = $('userList');
-  const others = users.filter(u => u.id !== me.id);
-  $('userCount').textContent = others.length + ' kisi';
-
   if (!others.length) {
-    list.innerHTML = '<div class="no-users">Henuz kimse yok</div>';
+    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--txt3);font-size:13px">Henuz baska kimse yok</div>';
     return;
   }
 
   list.innerHTML = others.map(u => `
-    <div class="user-item ${chatWith === u.id ? 'active' : ''}" data-id="${u.id}">
-      <div class="user-avatar" style="background:${u.avatar.c}">
-        ${u.avatar.i}
-        <div class="dot"></div>
+    <div class="user-item ${currentChat?.id === u.id ? 'active' : ''}" data-id="${u.id}">
+      <div class="u-av" style="background:${u.avatar?.color || '#666'}">
+        ${u.avatar?.initial || '?'}
+        <div class="u-dot"></div>
       </div>
       <div>
-        <div class="user-name">${esc(u.username)}</div>
-        <div class="user-status">Cevrimici</div>
+        <div class="u-name">${esc(u.username)}</div>
+        <div class="u-sub">Cevrimici</div>
       </div>
     </div>
   `).join('');
 
   list.querySelectorAll('.user-item').forEach(el => {
-    el.onclick = () => openChat(el.dataset.id);
+    el.onclick = () => openChat(el.dataset.id, data.find(u => u.id === el.dataset.id));
   });
-}
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  // Mevcut chat hala aktif mi?
+  if (currentChat) {
+    const still = others.find(u => u.id === currentChat.id);
+    if (still) {
+      $('chatStatus').textContent = 'Cevrimici';
+      $('chatStatus').style.color = 'var(--green)';
+    } else {
+      $('chatStatus').textContent = 'Cevrimdisi';
+      $('chatStatus').style.color = 'var(--txt3)';
+    }
+  }
+}
 
 // ============ CHAT ============
-function openChat(uid) {
-  const u = users.find(x => x.id === uid);
-  if (!u) return;
-  chatWith = uid;
-  chatType = 'user';
-  hide($('emptyScreen')); show($('chatScreen'));
-  $('chatUser').innerHTML = `<div class="user-avatar" style="background:${u.avatar.c};width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff">${u.avatar.i}</div> ${esc(u.username)}`;
-  $('messages').innerHTML = '';
-  renderUsers();
-  $('msgInput').focus();
+async function openChat(userId, userData) {
+  if (!userData) {
+    const { data } = await sb.from('users').select('*').eq('id', userId).single();
+    userData = data;
+  }
+  if (!userData) return;
+
+  currentChat = userData;
+
+  hide($('emptyState'));
+  show($('chatHeader'));
+  show($('messagesArea'));
+  show($('chatInput'));
+
+  $('chatAvatar').style.background = userData.avatar?.color || '#666';
+  $('chatAvatar').textContent = userData.avatar?.initial || '?';
+  $('chatName').textContent = userData.username;
+
+  // Sohbet gecmisini yukle
+  await loadMessages();
+
+  // Listeyi guncelle
+  refreshUsers();
 }
 
-// ============ MESSAGES ============
-$('btnSend').onclick = sendMsg;
+async function loadMessages() {
+  if (!me || !currentChat) return;
+
+  const { data } = await sb.from('messages')
+    .select('*')
+    .or(`and(sender_id.eq.${me.id},receiver_id.eq.${currentChat.id}),and(sender_id.eq.${currentChat.id},receiver_id.eq.${me.id})`)
+    .order('created_at', { ascending: true })
+    .limit(100);
+
+  const el = $('messages');
+  el.innerHTML = '';
+  if (data) data.forEach(m => appendMessage(m));
+  $('messagesArea').scrollTop = $('messagesArea').scrollHeight;
+}
+
+function appendMessage(m) {
+  const isSent = m.sender_id === me.id;
+  const div = document.createElement('div');
+  div.className = 'msg' + (isSent ? ' sent' : '');
+
+  const av = m.sender_avatar || avatar(m.sender_name || 'U');
+
+  if (m.type === 'file') {
+    div.innerHTML = `
+      <div class="msg-av" style="background:${av.color || '#666'}">${av.initial || '?'}</div>
+      <div class="msg-body">
+        <div class="msg-name">${esc(m.sender_name || '')}</div>
+        <div class="msg-bubble">
+          <div style="opacity:.7;font-size:12px;margin-bottom:4px">📎 Dosya</div>
+          <div>${esc(m.data?.fileName || 'dosya')}</div>
+          ${m.data?.fileData ? `<a href="${m.data.fileData}" download="${m.data.fileName}" style="color:var(--accent2);font-size:12px">Indir</a>` : ''}
+        </div>
+        <div class="msg-time">${timeStr(m.created_at)}</div>
+      </div>
+    `;
+  } else {
+    div.innerHTML = `
+      <div class="msg-av" style="background:${av.color || '#666'}">${av.initial || '?'}</div>
+      <div class="msg-body">
+        <div class="msg-name">${esc(m.sender_name || '')}</div>
+        <div class="msg-bubble">${esc(m.content || '')}</div>
+        <div class="msg-time">${timeStr(m.created_at)}</div>
+      </div>
+    `;
+  }
+
+  $('messages').appendChild(div);
+}
+
+// ============ SEND MESSAGE ============
+$('sendBtn').onclick = sendMsg;
 $('msgInput').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+};
+$('msgInput').oninput = () => {
+  $('sendBtn').disabled = !$('msgInput').value.trim();
 };
 
 async function sendMsg() {
   const txt = $('msgInput').value.trim();
-  if (!txt || !chatWith) return;
+  if (!txt || !me || !currentChat) return;
 
-  addMsg({ name: me.username, avatar: me.avatar, text: txt, sent: true, ts: Date.now() });
   $('msgInput').value = '';
+  $('sendBtn').disabled = true;
 
-  // WebRTC data channel ile dene
-  if (webrtc && webrtc.send(chatWith, txt)) return;
+  const { error } = await sb.from('messages').insert({
+    id: crypto.randomUUID(),
+    sender_id: me.id,
+    sender_name: me.username,
+    sender_avatar: me.avatar,
+    receiver_id: currentChat.id,
+    type: 'msg',
+    content: txt,
+    data: {},
+    created_at: Date.now()
+  });
 
-  // Degilse signaling ile gonder
-  await api('signal', { from: me.id, to: chatWith, type: 'msg', data: { content: txt } });
+  if (error) console.error('Send error:', error);
 }
 
-function addMsg(m) {
-  const div = document.createElement('div');
-  div.className = 'msg' + (m.sent ? ' sent' : '');
-  const time = new Date(m.ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-  div.innerHTML = `
-    <div class="msg-av" style="background:${m.avatar.c}">${m.avatar.i}</div>
-    <div class="msg-body">
-      <div class="msg-name">${esc(m.name)}</div>
-      <div class="msg-text">${esc(m.text)}</div>
-      <div class="msg-time">${time}</div>
-    </div>
-  `;
-  $('messages').appendChild(div);
-  $('messages').scrollTop = $('messages').scrollHeight;
-}
+// ============ REALTIME ============
+function listenMessages() {
+  if (!me) return;
 
-// ============ SIGNAL HANDLER ============
-async function handleSignal(m) {
-  if (m.from === me.id) return;
+  sb.channel('msgs')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${me.id}` }, payload => {
+      const m = payload.new;
+      if (m.sender_id === me.id) return;
 
-  switch (m.type) {
-    case 'msg':
       SFX.msg();
-      if (chatWith === m.from) {
-        addMsg({ name: m.name, avatar: m.avatar, text: m.data.content, sent: false, ts: m.ts });
+
+      if (currentChat && m.sender_id === currentChat.id) {
+        appendMessage(m);
+        $('messagesArea').scrollTop = $('messagesArea').scrollHeight;
       }
-      break;
+    })
+    .subscribe();
 
-    case 'offer':
-      activeCall = { peerId: m.from, name: m.name, type: m.data.callType, offer: m.data.offer };
-      SFX.ring();
-      ringTimer = setInterval(() => SFX.ring(), 1500);
-      $('callerName').textContent = m.name;
-      $('callerType').textContent = m.data.callType === 'video' ? 'Goruntulu Arama' : 'Sesli Arama';
-      show($('incomingCall'));
-      setTimeout(() => { if (activeCall && activeCall.peerId === m.from) rejectCall(); }, 25000);
-      break;
-
-    case 'answer':
-      SFX.connect();
-      if (webrtc && webrtc.peers[m.from]) {
-        await webrtc.peers[m.from].setRemoteDescription(new RTCSessionDescription(m.data.answer));
-        $('callStatus').textContent = 'Baglandi!';
-      }
-      break;
-
-    case 'ice':
-      if (webrtc && webrtc.peers[m.from] && m.data.candidate) {
-        try { await webrtc.peers[m.from].addIceCandidate(new RTCIceCandidate(m.data.candidate)); } catch(e) {}
-      }
-      break;
-
-    case 'reject': case 'end':
-      SFX.end();
-      stopRing();
-      webrtc && webrtc.hangup(m.from);
-      hide($('callScreen')); hide($('incomingCall'));
-      activeCall = null;
-      break;
-  }
+  // Call signaling
+  sb.channel('calls')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${me.id}` }, payload => {
+      const m = payload.new;
+      if (m.type === 'offer') handleIncomingCall(m);
+      else if (m.type === 'answer') handleCallAnswer(m);
+      else if (m.type === 'ice') handleICE(m);
+      else if (m.type === 'call-end') handleCallEnd(m);
+      else if (m.type === 'call-reject') handleCallReject(m);
+    })
+    .subscribe();
 }
-
-function stopRing() { if (ringTimer) { clearInterval(ringTimer); ringTimer = null; } }
 
 // ============ FILE ============
-$('btnFile').onclick = () => $('fileInput').click();
-$('fileInput').onchange = e => { for (const f of e.target.files) sendFile(f); };
+$('attachBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => {
+  for (const f of e.target.files) uploadFile(f);
+};
 
-function sendFile(file) {
+async function uploadFile(file) {
+  if (!me || !currentChat) return;
+
   const reader = new FileReader();
   reader.onload = async () => {
-    const data = { fileName: file.name, fileSize: file.size, fileData: reader.result };
-    addMsg({ name: me.username, avatar: me.avatar, text: '📎 ' + file.name, sent: true, ts: Date.now() });
-    if (chatWith) await api('signal', { from: me.id, to: chatWith, type: 'file', data });
+    await sb.from('messages').insert({
+      id: crypto.randomUUID(),
+      sender_id: me.id,
+      sender_name: me.username,
+      sender_avatar: me.avatar,
+      receiver_id: currentChat.id,
+      type: 'file',
+      content: '',
+      data: { fileName: file.name, fileSize: file.size, fileData: reader.result },
+      created_at: Date.now()
+    });
   };
   reader.readAsDataURL(file);
 }
 
 // ============ WEBRTC ============
-class P2P {
-  constructor() { this.peers = {}; this.stream = null; this.ch = {}; }
+let localStream = null;
+let peerConn = null;
+let dataChannel = null;
 
-  create(id) {
-    if (this.peers[id]) this.hangup(id);
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
+const rtcConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
+
+async function getMedia(audio, video) {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
+      video: video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false
     });
-    this.peers[id] = pc;
+    $('localVideo').srcObject = localStream;
+    return localStream;
+  } catch (e) {
+    alert('Mikrofon/kamera erisimi reddedildi');
+    throw e;
+  }
+}
 
-    // Track ekle
-    if (this.stream) {
-      this.stream.getTracks().forEach(t => pc.addTrack(t, this.stream));
+function createPeer(targetId) {
+  peerConn = new RTCPeerConnection(rtcConfig);
+
+  if (localStream) {
+    localStream.getTracks().forEach(t => peerConn.addTrack(t, localStream));
+  }
+
+  peerConn.onicecandidate = e => {
+    if (e.candidate && currentChat) {
+      sendSignal('ice', { candidate: e.candidate });
     }
+  };
 
-    // ICE
-    pc.onicecandidate = e => {
-      if (e.candidate) api('signal', { from: me.id, to: id, type: 'ice', data: { candidate: e.candidate } });
-    };
+  peerConn.ontrack = e => {
+    if (e.streams[0]) $('remoteVideo').srcObject = e.streams[0];
+  };
 
-    // Remote stream
-    pc.ontrack = e => {
-      if (e.streams[0]) $('remoteVideo').srcObject = e.streams[0];
-    };
-
-    // Data channel - gelen
-    pc.ondatachannel = e => this.setupCh(id, e.channel);
-
-    // Connection state
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') this.hangup(id);
-    };
-
-    // Data channel - giden
-    const ch = pc.createDataChannel('chat', { ordered: true });
-    this.setupCh(id, ch);
-
-    return pc;
-  }
-
-  setupCh(id, ch) {
-    ch.onopen = () => { this.ch[id] = ch; };
-    ch.onclose = () => { delete this.ch[id]; };
-    ch.onmessage = e => {
-      try {
-        const d = JSON.parse(e.data);
-        if (d.type === 'msg') {
-          SFX.msg();
-          addMsg({ name: 'Peer', avatar: { i: '?', c: '#666' }, text: d.content, sent: false, ts: Date.now() });
-        }
-      } catch(err) {}
-    };
-  }
-
-  send(id, msg) {
-    const ch = this.ch[id];
-    if (ch && ch.readyState === 'open') {
-      ch.send(JSON.stringify({ type: 'msg', content: msg }));
-      return true;
+  peerConn.onconnectionstatechange = () => {
+    if (peerConn.connectionState === 'connected') {
+      SFX.connected();
+      $('callStatusText').textContent = 'Baglandi!';
     }
-    return false;
-  }
+    if (peerConn.connectionState === 'failed' || peerConn.connectionState === 'disconnected') {
+      endCall();
+    }
+  };
 
-  async getMedia(audio, video) {
+  // Data channel
+  dataChannel = peerConn.createDataChannel('chat', { ordered: true });
+  dataChannel.onmessage = e => {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio, video });
-      $('localVideo').srcObject = this.stream;
-      return this.stream;
-    } catch(e) { throw e; }
-  }
+      const d = JSON.parse(e.data);
+      if (d.type === 'msg') {
+        SFX.msg();
+        appendMessage({
+          sender_id: callPeer,
+          sender_name: currentChat?.username || 'Peer',
+          sender_avatar: currentChat?.avatar,
+          type: 'msg',
+          content: d.content,
+          created_at: Date.now()
+        });
+      }
+    } catch (err) {}
+  };
 
-  toggleAudio() {
-    const t = this.stream?.getAudioTracks()[0];
-    if (t) { t.enabled = !t.enabled; return t.enabled; }
-    return false;
-  }
+  return peerConn;
+}
 
-  toggleVideo() {
-    const t = this.stream?.getVideoTracks()[0];
-    if (t) { t.enabled = !t.enabled; return t.enabled; }
-    return false;
-  }
-
-  hangup(id) {
-    if (this.peers[id]) { try { this.peers[id].close(); } catch(e) {} delete this.peers[id]; }
-    delete this.ch[id];
-    if (!Object.keys(this.peers).length) {
-      if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
-      $('remoteVideo').srcObject = null;
-      $('localVideo').srcObject = null;
-    }
-  }
-
-  hangupAll() {
-    Object.keys(this.peers).forEach(id => this.hangup(id));
-  }
+async function sendSignal(type, data) {
+  if (!me || !currentChat) return;
+  await sb.from('messages').insert({
+    id: crypto.randomUUID(),
+    sender_id: me.id,
+    sender_name: me.username,
+    sender_avatar: me.avatar,
+    receiver_id: currentChat.id,
+    type,
+    content: '',
+    data,
+    created_at: Date.now()
+  });
 }
 
 // ============ CALLS ============
 $('btnVoice').onclick = () => startCall('voice');
 $('btnVideo').onclick = () => startCall('video');
-$('btnEnd').onclick = endCall;
-$('btnAccept').onclick = acceptCall;
-$('btnReject').onclick = rejectCall;
-$('btnMute').onclick = () => { if (webrtc) webrtc.toggleAudio(); };
-$('btnCam').onclick = () => { if (webrtc) webrtc.toggleVideo(); };
+$('callEnd').onclick = endCall;
+$('callMute').onclick = toggleMute;
+$('callCam').onclick = toggleCam;
+$('incAccept').onclick = acceptCall;
+$('incReject').onclick = rejectCall;
 
 async function startCall(type) {
-  if (!chatWith) return;
+  if (!currentChat) return;
   try {
-    webrtc = new P2P();
-    await webrtc.getMedia(type === 'voice' || type === 'video', type === 'video');
-    const pc = webrtc.create(chatWith);
+    callPeer = currentChat.id;
+    await getMedia(type === 'voice' || type === 'video', type === 'video');
+    const pc = createPeer(callPeer);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    const sent = await api('signal', { from: me.id, to: chatWith, type: 'offer', data: { offer, callType: type } });
-    if (sent.error) { alert('Kullanici cevrimdisi'); webrtc.hangupAll(); return; }
+    await sendSignal('offer', { offer, callType: type });
 
-    show($('callScreen')); hide($('chatScreen'));
-    $('callName').textContent = users.find(u => u.id === chatWith)?.username || '';
-    $('callStatus').textContent = 'Araniyor...';
-    activeCall = { peerId: chatWith, type };
+    show($('callOverlay'));
+    $('callName').textContent = currentChat.username;
+    $('callAvatar').style.background = currentChat.avatar?.color || '#666';
+    $('callAvatar').textContent = currentChat.avatar?.initial || '?';
+    $('callStatusText').textContent = 'Araniyor...';
 
-    SFX.connect();
-    setTimeout(() => { if (activeCall) endCall(); }, 30000);
-  } catch(e) { alert('Mikrofon/kamera erisimi reddedildi'); }
+    // 30sn timeout
+    setTimeout(() => {
+      if ($('callStatusText').textContent === 'Araniyor...') endCall();
+    }, 30000);
+  } catch (e) { console.error(e); }
+}
+
+async function handleIncomingCall(m) {
+  if (m.sender_id === me.id) return;
+
+  callPeer = m.sender_id;
+  const callerAv = m.sender_avatar || avatar(m.sender_name || '?');
+
+  SFX.ring();
+  ringInterval = setInterval(() => SFX.ring(), 1500);
+
+  $('incAvatar').style.background = callerAv.color || '#666';
+  $('incAvatar').textContent = callerAv.initial || '?';
+  $('incName').textContent = m.sender_name || 'Bilinmeyen';
+  $('incType').textContent = m.data?.callType === 'video' ? 'Goruntulu Arama' : 'Sesli Arama';
+  show($('incomingOverlay'));
+
+  // Caller bilgisini kaydet
+  window._incomingOffer = m.data?.offer;
+  window._incomingCallType = m.data?.callType;
+
+  // 25sn cevap
+  setTimeout(() => {
+    if ($('incomingOverlay').classList.contains('hidden')) return;
+    rejectCall();
+  }, 25000);
 }
 
 async function acceptCall() {
-  if (!activeCall) return;
+  hide($('incomingOverlay'));
   stopRing();
+
   try {
-    webrtc = new P2P();
-    const type = activeCall.type;
-    await webrtc.getMedia(type === 'voice' || type === 'video', type === 'video');
-    const pc = webrtc.create(activeCall.peerId);
-    await pc.setRemoteDescription(new RTCSessionDescription(activeCall.offer));
+    const type = window._incomingCallType || 'voice';
+    await getMedia(type === 'voice' || type === 'video', type === 'video');
+    const pc = createPeer(callPeer);
+    await pc.setRemoteDescription(new RTCSessionDescription(window._incomingOffer));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    await api('signal', { from: me.id, to: activeCall.peerId, type: 'answer', data: { answer } });
 
-    SFX.connect();
-    hide($('incomingCall')); show($('callScreen'));
-    $('callName').textContent = activeCall.name;
-    $('callStatus').textContent = 'Baglandi!';
-  } catch(e) { console.error(e); }
+    await sendSignal('answer', { answer });
+
+    // Karsidakinin bilgilerini bul
+    const { data: caller } = await sb.from('users').select('*').eq('id', callPeer).single();
+
+    show($('callOverlay'));
+    $('callName').textContent = caller?.username || 'Peer';
+    $('callAvatar').style.background = caller?.avatar?.color || '#666';
+    $('callAvatar').textContent = caller?.avatar?.initial || '?';
+    $('callStatusText').textContent = 'Baglandi!';
+    SFX.connected();
+  } catch (e) { console.error(e); }
 }
 
-function rejectCall() {
-  if (!activeCall) return;
+async function rejectCall() {
+  hide($('incomingOverlay'));
   stopRing();
-  api('signal', { from: me.id, to: activeCall.peerId, type: 'reject', data: {} });
-  hide($('incomingCall'));
-  activeCall = null;
-}
-
-function endCall() {
-  stopRing();
-  SFX.end();
-  if (activeCall) {
-    api('signal', { from: me.id, to: activeCall.peerId, type: 'end', data: {} });
-    webrtc && webrtc.hangup(activeCall.peerId);
-    activeCall = null;
-  } else {
-    webrtc && webrtc.hangupAll();
+  if (callPeer) {
+    await sendSignal('call-reject', {});
   }
-  hide($('callScreen'));
+  callPeer = null;
+  window._incomingOffer = null;
+}
+
+function handleCallAnswer(m) {
+  if (peerConn && m.data?.answer) {
+    peerConn.setRemoteDescription(new RTCSessionDescription(m.data.answer));
+    SFX.connected();
+    $('callStatusText').textContent = 'Baglandi!';
+  }
+}
+
+function handleICE(m) {
+  if (peerConn && m.data?.candidate) {
+    peerConn.addIceCandidate(new RTCIceCandidate(m.data.candidate)).catch(() => {});
+  }
+}
+
+async function handleCallEnd(m) {
+  cleanupCall();
+}
+
+async function handleCallReject(m) {
+  cleanupCall();
+}
+
+function cleanupCall() {
+  stopRing();
+  SFX.ended();
+  hide($('callOverlay'));
+  hide($('incomingOverlay'));
+  if (peerConn) { try { peerConn.close(); } catch(e) {} peerConn = null; }
+  dataChannel = null;
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  $('remoteVideo').srcObject = null;
+  $('localVideo').srcObject = null;
+  callPeer = null;
+  window._incomingOffer = null;
+}
+
+async function endCall() {
+  if (callPeer && me) {
+    await sendSignal('call-end', {}).catch(() => {});
+  }
+  cleanupCall();
+}
+
+function toggleMute() {
+  if (localStream) {
+    const t = localStream.getAudioTracks()[0];
+    if (t) t.enabled = !t.enabled;
+  }
+}
+
+function toggleCam() {
+  if (localStream) {
+    const t = localStream.getVideoTracks()[0];
+    if (t) t.enabled = !t.enabled;
+  }
+}
+
+function stopRing() {
+  if (ringInterval) { clearInterval(ringInterval); ringInterval = null; }
 }
 
 // ============ CLEANUP ============
-window.onbeforeunload = () => { if (me) navigator.sendBeacon('/api/leave/' + me.id); };
+window.onbeforeunload = async () => {
+  if (me) {
+    await sb.from('users').delete().eq('id', me.id).catch(() => {});
+  }
+};
+
+// ============ BACK BUTTON ============
+$('backBtn').onclick = () => {
+  currentChat = null;
+  show($('emptyState'));
+  hide($('chatHeader'));
+  hide($('messagesArea'));
+  hide($('chatInput'));
+  hide($('typingBar'));
+};
+
+// ============ SEARCH ============
+$('searchInput').oninput = e => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('.user-item').forEach(el => {
+    const name = el.querySelector('.u-name')?.textContent.toLowerCase() || '';
+    el.style.display = name.includes(q) ? '' : 'none';
+  });
+};
